@@ -5,86 +5,69 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/*
-  Basit hafıza:
-  Gerçek üründe DB olacak
-*/
-const memory = [];
+// 🧠 Hafıza içi veri havuzu (şimdilik)
+const marketData = [];
 
-/*
-  KATKI ENDPOINT
-*/
-app.post("/api/v1/contribute", (req, res) => {
-  const data = req.body;
+// 📊 Medyan hesaplama
+function median(values) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0
+    ? sorted[mid]
+    : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
 
-  if (!data.brand || !data.model || !data.price) {
-    return res.json({ status: "ignored" });
+// 🔌 API ENDPOINT
+app.post("/api/market", (req, res) => {
+  const {
+    brand,
+    series,
+    model,
+    year,
+    bodyType,
+    price
+  } = req.body;
+
+  if (!brand || !model || !year || !bodyType || !price) {
+    return res.status(400).json({ error: "Eksik veri" });
   }
 
-  memory.push({
-    brand: data.brand,
-    model: data.model,
-    fuel: data.fuel,
-    gear: data.gear,
-    year: data.year,
-    km: data.km,
-    price: data.price
+  // Veriyi kaydet
+  marketData.push({
+    brand,
+    series,
+    model,
+    year,
+    bodyType,
+    price: Number(price)
   });
 
-  res.json({ status: "ok" });
-});
-
-/*
-  ANALİZ ENDPOINT
-*/
-app.post("/api/v1/analyze", (req, res) => {
-  const q = req.body;
-
-  const similars = memory.filter(m =>
-    m.brand === q.brand &&
-    m.model === q.model &&
-    m.fuel === q.fuel &&
-    m.gear === q.gear &&
-    Math.abs(m.year - q.year) <= 1
+  // Benzer araçları bul
+  const similar = marketData.filter(v =>
+    v.brand === brand &&
+    v.series === series &&
+    v.model === model &&
+    v.year === year &&
+    v.bodyType === bodyType
   );
 
-  if (similars.length < 3) {
-    return res.json({
-      message: "Yeterli veri yok",
-      confidence_score: 20
-    });
-  }
+  const prices = similar.map(v => v.price);
+  const marketPrice = median(prices);
 
-  const prices = similars.map(s => s.price).sort((a,b)=>a-b);
-  const median = prices[Math.floor(prices.length / 2)];
-
-  const diffPercent = Math.round(((q.price - median) / median) * 100);
-
-  const profitMin = Math.max(0, median * 0.95 - q.price);
-  const profitMax = Math.max(0, median * 0.98 - q.price);
-
-  const flipScore = Math.min(
-    100,
-    Math.round((median - q.price) / median * 120)
-  );
+  const diffPercent = marketPrice
+    ? ((price - marketPrice) / marketPrice) * 100
+    : null;
 
   res.json({
-    market_price: median,
-    price_diff_percent: diffPercent,
-    profit_range: {
-      min: Math.round(profitMin),
-      max: Math.round(profitMax)
-    },
-    flip_score: flipScore,
-    confidence_score: Math.min(90, similars.length * 10),
-    sample_size: similars.length
+    marketPrice,
+    diffPercent,
+    count: prices.length
   });
 });
 
-/*
-  RENDER PORT
-*/
+// 🚀 Render port
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Server çalışıyor, port:", PORT);
+  console.log("Piyasa motoru çalışıyor:", PORT);
 });
