@@ -5,69 +5,28 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🧠 Hafıza içi veri havuzu (şimdilik)
-const marketData = [];
+app.post("/api/analyze", (req, res) => {
+  const { url, ilanNo } = req.body;
 
-// 📊 Medyan hesaplama
-function median(values) {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0
-    ? sorted[mid]
-    : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-}
-
-// 🔌 API ENDPOINT
-app.post("/api/market", (req, res) => {
-  const {
-    brand,
-    series,
-    model,
-    year,
-    bodyType,
-    price
-  } = req.body;
-
-  if (!brand || !model || !year || !bodyType || !price) {
-    return res.status(400).json({ error: "Eksik veri" });
-  }
-
-  // Veriyi kaydet
-  marketData.push({
-    brand,
-    series,
-    model,
-    year,
-    bodyType,
-    price: Number(price)
-  });
-
-  // Benzer araçları bul
-  const similar = marketData.filter(v =>
-    v.brand === brand &&
-    v.series === series &&
-    v.model === model &&
-    v.year === year &&
-    v.bodyType === bodyType
-  );
-
-  const prices = similar.map(v => v.price);
-  const marketPrice = median(prices);
-
-  const diffPercent = marketPrice
-    ? ((price - marketPrice) / marketPrice) * 100
-    : null;
-
-  res.json({
-    marketPrice,
-    diffPercent,
-    count: prices.length
+  // ŞİMDİLİK SAHTE (TEST) VERİ
+  // Ama endpoint GERÇEK
+  return res.json({
+    success: true,
+    price: 450000,
+    year: 2018,
+    km: 125000,
+    brand: "Toyota",
+    model: "Corolla",
+    fuel: "Benzin",
+    gear: "Manuel",
+    bodyType: "Sedan",
+    marketText: "Piyasa seviyesinde (test veri)",
+    ilanNo,
+    url
   });
 });
 
-// 🚀 Render port
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("Piyasa motoru çalışıyor:", PORT);
+  console.log("Server çalışıyor:", PORT);
 });
