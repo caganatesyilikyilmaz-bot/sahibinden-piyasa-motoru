@@ -5,14 +5,17 @@ import * as cheerio from "cheerio";
 import fs from "fs";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+// 🔥 CORS + JSON GARANTİ
+app.use(cors({ origin: "*" }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 const DATA_FILE = "./data.json";
 
-// ==========================
-// Yardımcılar
-// ==========================
+// =====================
+// Helpers
+// =====================
 function cleanNumber(text) {
   if (!text) return null;
   const n = text.replace(/\D/g, "");
@@ -30,16 +33,28 @@ function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-// ==========================
-// ANALYZE ENDPOINT
-// ==========================
-app.post("/api/analyze", async (req, res) => {
-  const { url } = req.body;
-  if (!url) {
-    return res.json({ success: false, message: "URL yok" });
-  }
+// =====================
+// HEALTH CHECK (ÖNEMLİ)
+// =====================
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "API ayakta" });
+});
 
+// =====================
+// ANALYZE
+// =====================
+app.post("/api/analyze", async (req, res) => {
   try {
+    const { url } = req.body || {};
+
+    if (!url) {
+      return res.json({
+        success: false,
+        message: "URL gelmedi"
+      });
+    }
+
+    // 🔥 Sahibinden isteği
     const response = await fetch(url, {
       headers: {
         "User-Agent":
@@ -59,50 +74,48 @@ app.post("/api/analyze", async (req, res) => {
       if (key && val) specs[key] = val;
     });
 
-    const priceText = $("div[class*='classified-price'], h2")
-      .first()
-      .text();
+    const priceText =
+      $("div[class*='classified-price']").first().text() ||
+      $("h2").first().text();
+
     const price = cleanNumber(priceText);
+    const ilanNo = cleanNumber(
+      html.match(/İlan No\s+(\d+)/)?.[1]
+    );
 
-    const ilanNo = $("span[class*='classifiedId']").text().trim()
-      || cleanNumber(html.match(/İlan No\s+(\d+)/)?.[1]);
+    const brand = specs["Marka"];
+    const model = specs["Model"];
+    const year = cleanNumber(specs["Yıl"]);
 
-    if (!price || !ilanNo) {
-      return res.json({ success: false, message: "Veriler okunamadı" });
+    if (!price || !ilanNo || !brand || !model || !year) {
+      return res.json({
+        success: false,
+        message: "Temel veriler okunamadı"
+      });
     }
 
     const listing = {
       ilanNo: String(ilanNo),
       price,
-      brand: specs["Marka"],
-      model: specs["Model"],
-      year: Number(specs["Yıl"]),
-      bodyType: specs["Kasa Tipi"],
+      brand,
+      model,
+      year,
       createdAt: Date.now()
     };
 
-    // ==========================
-    // VERİYİ KAYDET
-    // ==========================
     const db = loadData();
-
-    const exists = db.listings.find(
-      l => l.ilanNo === listing.ilanNo
-    );
+    const exists = db.listings.find(l => l.ilanNo === listing.ilanNo);
 
     if (!exists) {
       db.listings.push(listing);
       saveData(db);
     }
 
-    // ==========================
-    // PİYASA HESABI
-    // ==========================
+    // Piyasa havuzu
     const pool = db.listings.filter(l =>
       l.brand === listing.brand &&
       l.model === listing.model &&
-      l.year === listing.year &&
-      l.bodyType === listing.bodyType
+      l.year === listing.year
     );
 
     const avg =
@@ -120,6 +133,7 @@ app.post("/api/analyze", async (req, res) => {
     });
 
   } catch (err) {
+    console.error("SERVER ERROR:", err);
     return res.json({
       success: false,
       message: "Sunucu hatası",
@@ -128,7 +142,6 @@ app.post("/api/analyze", async (req, res) => {
   }
 });
 
-// ==========================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("✅ Server çalışıyor. Port:", PORT);
