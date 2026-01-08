@@ -1,57 +1,99 @@
 import express from "express";
 import cors from "cors";
+import fs from "fs";
 
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-const listings = [];
+const DATA_FILE = "./data.json";
 
-app.get("/", (req, res) => {
-  res.json({ ok: true });
+// ----------------- yardımcılar -----------------
+function loadData() {
+  if (!fs.existsSync(DATA_FILE)) {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ listings: [] }, null, 2));
+  }
+  return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+}
+
+function saveData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+function median(arr) {
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+// ----------------- sağlık -----------------
+app.get("/", (_, res) => {
+  res.json({ ok: true, message: "Sahibinden Piyasa API çalışıyor" });
 });
 
+// ----------------- ANALİZ -----------------
 app.post("/api/analyze", (req, res) => {
-  const {
-    ilanNo,
-    price,
-    brand,
-    model,
-    year
-  } = req.body || {};
+  const { ilanNo, price, brand, model, year } = req.body;
 
   if (!ilanNo || !price || !brand || !model || !year) {
-    return res.json({
-      success: false,
-      message: "Eksik veri"
-    });
+    return res.json({ success: false, message: "Eksik veri" });
   }
 
-  const exists = listings.find(l => l.ilanNo === ilanNo);
+  const db = loadData();
+
+  // ilan daha önce var mı
+  const exists = db.listings.find(l => l.ilanNo === ilanNo);
 
   if (!exists) {
-    listings.push({ ilanNo, price, brand, model, year });
+    db.listings.push({
+      ilanNo,
+      price,
+      brand,
+      model,
+      year,
+      createdAt: Date.now()
+    });
+    saveData(db);
   }
 
-  const pool = listings.filter(
+  // piyasa havuzu
+  const pool = db.listings.filter(
     l => l.brand === brand && l.model === model && l.year === year
   );
 
-  const avg =
-    pool.reduce((s, l) => s + l.price, 0) / pool.length;
+  const prices = pool.map(p => p.price);
 
-  const diffPercent = ((price - avg) / avg) * 100;
+  let marketPrice;
+  let method;
 
-  res.json({
+  if (prices.length < 8) {
+    marketPrice = Math.round(
+      prices.reduce((a, b) => a + b, 0) / prices.length
+    );
+    method = "ortalama";
+  } else {
+    marketPrice = Math.round(median(prices));
+    method = "medyan";
+  }
+
+  const bargainPrice = Math.round(marketPrice * 0.95);
+
+  const diffPercent = Number(
+    (((price - marketPrice) / marketPrice) * 100).toFixed(1)
+  );
+
+  return res.json({
     success: true,
     analyzedBefore: !!exists,
-    marketPrice: Math.round(avg),
-    diffPercent: Number(diffPercent.toFixed(1)),
-    count: pool.length
+    marketPrice,
+    bargainPrice,
+    diffPercent,
+    count: prices.length,
+    method
   });
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log("✅ Server çalışıyor:", PORT);
-});
+app.listen(PORT, () =>
+  console.log("✅ Server çalışıyor. Port:", PORT)
+);
