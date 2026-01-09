@@ -1,7 +1,5 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
-import * as cheerio from "cheerio";
 import fs from "fs";
 
 const app = express();
@@ -15,12 +13,6 @@ const DATA_FILE = "./data.json";
 // =====================
 // HELPERS
 // =====================
-function cleanNumber(text) {
-  if (!text) return null;
-  const n = text.replace(/\D/g, "");
-  return n ? Number(n) : null;
-}
-
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) {
     fs.writeFileSync(DATA_FILE, JSON.stringify({ listings: [] }, null, 2));
@@ -42,7 +34,7 @@ app.get("/", (req, res) => {
 // =====================
 // ANALYZE
 // =====================
-app.post("/api/analyze", async (req, res) => {
+app.post("/api/analyze", (req, res) => {
   try {
     const { ilanNo, price, brand, model, year, km } = req.body || {};
 
@@ -59,7 +51,7 @@ app.post("/api/analyze", async (req, res) => {
       brand,
       model,
       year,
-      km: km || null,
+      km: typeof km === "number" ? km : null,
       createdAt: Date.now()
     };
 
@@ -80,17 +72,18 @@ app.post("/api/analyze", async (req, res) => {
       l.year === listing.year
     );
 
-    if (!pool.length) {
+    if (pool.length < 2) {
       return res.json({
         success: false,
-        message: "Piyasa havuzu yok"
+        message: "Yeterli piyasa verisi yok"
       });
     }
 
     // =====================
-    // HİBRİT PİYASA
+    // HİBRİT PİYASA (MEDYAN + ORTALAMA)
     // =====================
     const prices = pool.map(l => l.price).sort((a, b) => a - b);
+
     const median =
       prices.length % 2 === 0
         ? (prices[prices.length / 2 - 1] + prices[prices.length / 2]) / 2
@@ -102,11 +95,11 @@ app.post("/api/analyze", async (req, res) => {
     const baseMarketPrice = Math.round((median + average) / 2);
 
     // =====================
-    // ✅ KM NORMALİZASYONU (DÜZELTİLDİ)
+    // KM NORMALİZASYONU (DOĞRU YÖN)
     // =====================
     let adjustedMarketPrice = baseMarketPrice;
 
-    if (listing.km) {
+    if (listing.km !== null) {
       const kmList = pool
         .map(l => l.km)
         .filter(v => typeof v === "number");
@@ -117,14 +110,15 @@ app.post("/api/analyze", async (req, res) => {
 
         const kmDiff = listing.km - referenceKm;
 
-        // 🔥 HER 10.000 KM İÇİN %2 ETKİ
+        // her 10.000 km için %2 fiyat ETKİSİ
         const kmEffectPer10k = 0.02;
 
-        // 🔴 KRİTİK DÜZELTME: EKSİ İŞARETİ
+        // 🔴 DOĞRU FORMÜL:
+        // km artarsa fiyat DÜŞER
+        // km azalırsa fiyat ARTAR
         let kmMultiplier =
           1 - (kmDiff / 10000) * kmEffectPer10k;
 
-        // güvenlik sınırı
         kmMultiplier = Math.max(0.7, Math.min(1.3, kmMultiplier));
 
         adjustedMarketPrice = Math.round(
@@ -138,9 +132,24 @@ app.post("/api/analyze", async (req, res) => {
     // =====================
     const bargainPrice = Math.round(adjustedMarketPrice * 0.95);
 
+    // =====================
+    // PİYASA FARKI
+    // =====================
     const diffPercent = Number(
       (((listing.price - adjustedMarketPrice) / adjustedMarketPrice) * 100).toFixed(1)
     );
+
+    // =====================
+    // 🔥 TAHMİNİ KÂR (SADECE ALTINDA İSE)
+    // =====================
+    let estimatedProfit = null;
+
+    if (diffPercent < 0) {
+      const profit = bargainPrice - listing.price;
+      if (profit > 0) {
+        estimatedProfit = profit;
+      }
+    }
 
     return res.json({
       success: true,
@@ -149,6 +158,7 @@ app.post("/api/analyze", async (req, res) => {
       rawMarketPrice: baseMarketPrice,
       bargainPrice,
       diffPercent,
+      estimatedProfit, // 👈 sadece uygunsa dolu
       count: pool.length,
       method: "hibrit (medyan + ortalama + km)"
     });
