@@ -3,8 +3,10 @@ import cors from "cors";
 import fs from "fs";
 
 const app = express();
+
 app.use(cors({ origin: "*" }));
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 const DATA_FILE = "./data.json";
 
@@ -23,10 +25,10 @@ function saveData(data) {
 }
 
 // =====================
-// HEALTH
+// HEALTH CHECK
 // =====================
-app.get("/", (_, res) => {
-  res.json({ ok: true });
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "API ayakta" });
 });
 
 // =====================
@@ -34,117 +36,157 @@ app.get("/", (_, res) => {
 // =====================
 app.post("/api/analyze", (req, res) => {
   try {
-    const { ilanNo, price, brand, model, year, km } = req.body;
+    const { ilanNo, price, brand, model, year, km } = req.body || {};
 
     if (!ilanNo || !price || !brand || !model || !year) {
-      return res.json({ success: false, reason: "missing" });
+      return res.json({ success: false, message: "Gerekli veriler eksik" });
     }
-
-    const db = loadData();
 
     const listing = {
       ilanNo: String(ilanNo),
-      price: Number(price),
+      price,
       brand,
       model,
-      year: Number(year),
+      year,
       km: typeof km === "number" ? km : null,
       createdAt: Date.now()
     };
 
-    if (!db.listings.find(l => l.ilanNo === listing.ilanNo)) {
+    const db = loadData();
+    const exists = db.listings.find(l => l.ilanNo === listing.ilanNo);
+
+    if (!exists) {
       db.listings.push(listing);
       saveData(db);
     }
 
-    // HAVUZ
-    const pool = db.listings.filter(
-      l => l.brand === brand && l.model === model && l.year === year
+    // =====================
+    // HAVUZ (AYNI ARAÇ)
+    // =====================
+    const poolAll = db.listings.filter(l =>
+      l.brand === listing.brand &&
+      l.model === listing.model &&
+      l.year === listing.year
     );
 
-    if (pool.length < 2) {
-      return res.json({ success: false, reason: "insufficient" });
+    if (poolAll.length < 2) {
+      return res.json({
+        success: false,
+        message: "Yeterli piyasa verisi yok"
+      });
     }
 
     // =====================
-    // HİBRİT PİYASA
+    // 🔥 HAYALCİ FİLTRESİ (%35 ÜSTÜ)
+    // =====================
+    const sortedPrices = poolAll
+      .map(l => l.price)
+      .sort((a, b) => a - b);
+
+    const median =
+      sortedPrices.length % 2 === 0
+        ? (sortedPrices[sortedPrices.length / 2 - 1] +
+           sortedPrices[sortedPrices.length / 2]) / 2
+        : sortedPrices[Math.floor(sortedPrices.length / 2)];
+
+    const upperLimit = median * 1.35;
+
+    // ❗ SADECE ÜST TARAFI KIRP
+    const pool = poolAll.filter(l => l.price <= upperLimit);
+
+    // =====================
+    // HİBRİT PİYASA (MEDYAN + ORTALAMA)
     // =====================
     const prices = pool.map(l => l.price).sort((a, b) => a - b);
-    const median =
+
+    const cleanMedian =
       prices.length % 2 === 0
-        ? (prices[prices.length / 2 - 1] + prices[prices.length / 2]) / 2
+        ? (prices[prices.length / 2 - 1] +
+           prices[prices.length / 2]) / 2
         : prices[Math.floor(prices.length / 2)];
-    const average = prices.reduce((s, p) => s + p, 0) / prices.length;
-    const baseMarket = Math.round((median + average) / 2);
+
+    const average =
+      prices.reduce((s, p) => s + p, 0) / prices.length;
+
+    const baseMarketPrice = Math.round((cleanMedian + average) / 2);
 
     // =====================
-    // KM NORMALİZASYONU
+    // KM NORMALİZASYONU (DOĞRU YÖN)
     // =====================
-    let marketPrice = baseMarket;
-    const kmList = pool.map(l => l.km).filter(v => typeof v === "number");
+    let adjustedMarketPrice = baseMarketPrice;
 
-    if (km !== null && kmList.length >= 2) {
-      const refKm = kmList.reduce((s, v) => s + v, 0) / kmList.length;
-      const kmDiff = km - refKm;
-      let multiplier = 1 - (kmDiff / 10000) * 0.02;
-      multiplier = Math.max(0.7, Math.min(1.3, multiplier));
-      marketPrice = Math.round(baseMarket * multiplier);
+    if (listing.km !== null) {
+      const kmList = pool
+        .map(l => l.km)
+        .filter(v => typeof v === "number");
+
+      if (kmList.length) {
+        const referenceKm =
+          kmList.reduce((s, v) => s + v, 0) / kmList.length;
+
+        const kmDiff = listing.km - referenceKm;
+
+        const kmEffectPer10k = 0.02;
+
+        let kmMultiplier =
+          1 - (kmDiff / 10000) * kmEffectPer10k;
+
+        kmMultiplier = Math.max(0.7, Math.min(1.3, kmMultiplier));
+
+        adjustedMarketPrice = Math.round(
+          baseMarketPrice * kmMultiplier
+        );
+      }
     }
 
     // =====================
-    // PAZARLIK
+    // PAZARLIK (%5)
     // =====================
-    const bargainPrice = Math.round(marketPrice * 0.95);
+    const bargainPrice = Math.round(adjustedMarketPrice * 0.95);
 
     // =====================
-    // YÜZDELİK FARK
+    // PİYASA FARKI
     // =====================
     const diffPercent = Number(
-      (((price - marketPrice) / marketPrice) * 100).toFixed(1)
+      (((listing.price - adjustedMarketPrice) / adjustedMarketPrice) * 100).toFixed(1)
     );
 
     // =====================
-    // TAHMİNİ KÂR
+    // 🔥 TAHMİNİ KÂR (SADECE PİYASA ALTINDA)
     // =====================
     let estimatedProfit = null;
+
     if (diffPercent < 0) {
-      const p = bargainPrice - price;
-      if (p > 0) estimatedProfit = p;
+      const profit = bargainPrice - listing.price;
+      if (profit > 0) {
+        estimatedProfit = profit;
+      }
     }
-
-    // =====================
-    // AL–SAT SKORU
-    // =====================
-    let score = 0;
-    if (diffPercent < -10) score += 40;
-    else if (diffPercent < -5) score += 30;
-    else if (diffPercent < 0) score += 20;
-
-    if (estimatedProfit) score += 20;
-    if (km !== null && km < (kmList.reduce((s,v)=>s+v,0)/kmList.length)) score += 15;
-    score = Math.min(100, score);
-
-    // =====================
-    // GÜVEN SEVİYESİ
-    // =====================
-    let confidence = "Düşük";
-    if (pool.length >= 10) confidence = "Yüksek";
-    else if (pool.length >= 5) confidence = "Orta";
 
     return res.json({
       success: true,
-      marketPrice,
+      analyzedBefore: !!exists,
+      marketPrice: adjustedMarketPrice,
+      rawMarketPrice: baseMarketPrice,
       bargainPrice,
       diffPercent,
       estimatedProfit,
-      score,
-      confidence,
-      count: pool.length
+      count: pool.length,
+      filteredOut: poolAll.length - pool.length,
+      method: "hibrit + hayalci filtre (%35) + km"
     });
 
-  } catch (e) {
-    return res.json({ success: false, reason: "error" });
+  } catch (err) {
+    console.error("SERVER ERROR:", err);
+    return res.json({
+      success: false,
+      message: "Sunucu hatası",
+      error: err.message
+    });
   }
 });
 
-app.listen(10000, () => console.log("✅ Server hazır"));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log("✅ Server çalışıyor. Port:", PORT);
+});
