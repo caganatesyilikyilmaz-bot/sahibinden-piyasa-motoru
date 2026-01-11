@@ -6,7 +6,6 @@ const app = express();
 
 app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
 
 const DATA_FILE = "./data.json";
 
@@ -27,7 +26,7 @@ function saveData(data) {
 // =====================
 // HEALTH CHECK
 // =====================
-app.get("/", (req, res) => {
+app.get("/", (_, res) => {
   res.json({ ok: true, message: "API ayakta" });
 });
 
@@ -36,10 +35,21 @@ app.get("/", (req, res) => {
 // =====================
 app.post("/api/analyze", (req, res) => {
   try {
-    const { ilanNo, price, brand, model, year, km } = req.body || {};
+    const {
+      ilanNo,
+      price,
+      brand,
+      model,
+      year,
+      km,
+      fuel,
+      gear,
+      bodyType,
+      heavyDamage
+    } = req.body || {};
 
     if (!ilanNo || !price || !brand || !model || !year) {
-      return res.json({ success: false, message: "Gerekli veriler eksik" });
+      return res.json({ success: false, message: "Eksik veri" });
     }
 
     const listing = {
@@ -49,6 +59,10 @@ app.post("/api/analyze", (req, res) => {
       model,
       year,
       km: typeof km === "number" ? km : null,
+      fuel: fuel || null,
+      gear: gear || null,
+      bodyType: bodyType || null,
+      heavyDamage: heavyDamage === true,
       createdAt: Date.now()
     };
 
@@ -63,13 +77,17 @@ app.post("/api/analyze", (req, res) => {
     // =====================
     // HAVUZ (AYNI ARAÇ)
     // =====================
-    const poolAll = db.listings.filter(l =>
+    const pool = db.listings.filter(l =>
       l.brand === listing.brand &&
       l.model === listing.model &&
-      l.year === listing.year
+      l.year === listing.year &&
+      l.fuel === listing.fuel &&
+      l.gear === listing.gear &&
+      l.bodyType === listing.bodyType &&
+      l.heavyDamage === listing.heavyDamage
     );
 
-    if (poolAll.length < 2) {
+    if (pool.length < 3) {
       return res.json({
         success: false,
         message: "Yeterli piyasa verisi yok"
@@ -77,103 +95,76 @@ app.post("/api/analyze", (req, res) => {
     }
 
     // =====================
-    // 🔥 HAYALCİ FİLTRESİ (%35 ÜSTÜ)
+    // HAYALCİ İLANLARI DIŞLA
     // =====================
-    const sortedPrices = poolAll
-      .map(l => l.price)
-      .sort((a, b) => a - b);
+    const pricesAll = pool.map(l => l.price).sort((a, b) => a - b);
 
     const median =
-      sortedPrices.length % 2 === 0
-        ? (sortedPrices[sortedPrices.length / 2 - 1] +
-           sortedPrices[sortedPrices.length / 2]) / 2
-        : sortedPrices[Math.floor(sortedPrices.length / 2)];
+      pricesAll.length % 2 === 0
+        ? (pricesAll[pricesAll.length / 2 - 1] + pricesAll[pricesAll.length / 2]) / 2
+        : pricesAll[Math.floor(pricesAll.length / 2)];
 
-    const upperLimit = median * 1.35;
+    const filteredPool = pool.filter(
+      l => l.price <= median * 1.35
+    );
 
-    // ❗ SADECE ÜST TARAFI KIRP
-    const pool = poolAll.filter(l => l.price <= upperLimit);
+    const prices = filteredPool.map(l => l.price).sort((a, b) => a - b);
 
-    // =====================
-    // HİBRİT PİYASA (MEDYAN + ORTALAMA)
-    // =====================
-    const prices = pool.map(l => l.price).sort((a, b) => a - b);
-
-    const cleanMedian =
-      prices.length % 2 === 0
-        ? (prices[prices.length / 2 - 1] +
-           prices[prices.length / 2]) / 2
-        : prices[Math.floor(prices.length / 2)];
-
-    const average =
+    const avg =
       prices.reduce((s, p) => s + p, 0) / prices.length;
 
-    const baseMarketPrice = Math.round((cleanMedian + average) / 2);
+    const baseMarketPrice = Math.round((median + avg) / 2);
 
     // =====================
-    // KM NORMALİZASYONU (DOĞRU YÖN)
+    // KM NORMALİZASYONU
     // =====================
     let adjustedMarketPrice = baseMarketPrice;
 
-    if (listing.km !== null) {
-      const kmList = pool
-        .map(l => l.km)
-        .filter(v => typeof v === "number");
+    const kmList = filteredPool
+      .map(l => l.km)
+      .filter(v => typeof v === "number");
 
-      if (kmList.length) {
-        const referenceKm =
-          kmList.reduce((s, v) => s + v, 0) / kmList.length;
+    if (kmList.length && listing.km !== null) {
+      const refKm = kmList.reduce((s, v) => s + v, 0) / kmList.length;
+      const kmDiff = listing.km - refKm;
 
-        const kmDiff = listing.km - referenceKm;
+      const kmEffect = 0.02; // %2 / 10.000 km
+      let kmMultiplier = 1 - (kmDiff / 10000) * kmEffect;
+      kmMultiplier = Math.max(0.7, Math.min(1.3, kmMultiplier));
 
-        const kmEffectPer10k = 0.02;
-
-        let kmMultiplier =
-          1 - (kmDiff / 10000) * kmEffectPer10k;
-
-        kmMultiplier = Math.max(0.7, Math.min(1.3, kmMultiplier));
-
-        adjustedMarketPrice = Math.round(
-          baseMarketPrice * kmMultiplier
-        );
-      }
+      adjustedMarketPrice = Math.round(baseMarketPrice * kmMultiplier);
     }
 
     // =====================
-    // PAZARLIK (%5)
+    // %4 PAZARLIK
     // =====================
-    const bargainPrice = Math.round(adjustedMarketPrice * 0.95);
+    const bargainPrice = Math.round(adjustedMarketPrice * 0.96);
 
     // =====================
-    // PİYASA FARKI
+    // FARK
     // =====================
     const diffPercent = Number(
       (((listing.price - adjustedMarketPrice) / adjustedMarketPrice) * 100).toFixed(1)
     );
 
     // =====================
-    // 🔥 TAHMİNİ KÂR (SADECE PİYASA ALTINDA)
+    // TAHMİNİ KÂR
     // =====================
     let estimatedProfit = null;
-
     if (diffPercent < 0) {
       const profit = bargainPrice - listing.price;
-      if (profit > 0) {
-        estimatedProfit = profit;
-      }
+      if (profit > 0) estimatedProfit = profit;
     }
 
     return res.json({
       success: true,
       analyzedBefore: !!exists,
       marketPrice: adjustedMarketPrice,
-      rawMarketPrice: baseMarketPrice,
-      bargainPrice,
+      bargainAppliedPrice: bargainPrice,
       diffPercent,
       estimatedProfit,
-      count: pool.length,
-      filteredOut: poolAll.length - pool.length,
-      method: "hibrit + hayalci filtre (%35) + km"
+      count: filteredPool.length,
+      method: "hibrit + km + %4 pazarlık"
     });
 
   } catch (err) {
