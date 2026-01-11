@@ -47,10 +47,10 @@ app.post("/api/analyze", (req, res) => {
 
     const listing = {
       ilanNo: String(ilanNo),
-      price,
+      price: Number(price),
       brand,
       model,
-      year,
+      year: Number(year),
       km: typeof km === "number" ? km : null,
       createdAt: Date.now()
     };
@@ -80,9 +80,12 @@ app.post("/api/analyze", (req, res) => {
     }
 
     // =====================
-    // HİBRİT PİYASA (MEDYAN + ORTALAMA)
+    // HİBRİT PİYASA
     // =====================
-    const prices = pool.map(l => l.price).sort((a, b) => a - b);
+    const prices = pool
+      .map(l => l.price)
+      .filter(p => typeof p === "number")
+      .sort((a, b) => a - b);
 
     const median =
       prices.length % 2 === 0
@@ -95,36 +98,33 @@ app.post("/api/analyze", (req, res) => {
     const baseMarketPrice = Math.round((median + average) / 2);
 
     // =====================
-    // KM NORMALİZASYONU (DOĞRU YÖN)
+    // KM NORMALİZASYONU
     // =====================
     let adjustedMarketPrice = baseMarketPrice;
 
-    if (listing.km !== null) {
-      const kmList = pool
-        .map(l => l.km)
-        .filter(v => typeof v === "number");
+    const kmList = pool
+      .map(l => l.km)
+      .filter(v => typeof v === "number");
 
-      if (kmList.length) {
-        const referenceKm =
-          kmList.reduce((s, v) => s + v, 0) / kmList.length;
+    if (listing.km !== null && kmList.length >= 2) {
+      const referenceKm =
+        kmList.reduce((s, v) => s + v, 0) / kmList.length;
 
-        const kmDiff = listing.km - referenceKm;
+      const kmDiff = listing.km - referenceKm;
 
-        // her 10.000 km için %2 fiyat ETKİSİ
-        const kmEffectPer10k = 0.02;
+      // her 10.000 km için %2 etki
+      const kmEffectPer10k = 0.02;
 
-        // 🔴 DOĞRU FORMÜL:
-        // km artarsa fiyat DÜŞER
-        // km azalırsa fiyat ARTAR
-        let kmMultiplier =
-          1 - (kmDiff / 10000) * kmEffectPer10k;
+      // km artarsa fiyat düşer, km azalırsa artar
+      let kmMultiplier =
+        1 - (kmDiff / 10000) * kmEffectPer10k;
 
-        kmMultiplier = Math.max(0.7, Math.min(1.3, kmMultiplier));
+      // güvenlik sınırları
+      kmMultiplier = Math.max(0.7, Math.min(1.3, kmMultiplier));
 
-        adjustedMarketPrice = Math.round(
-          baseMarketPrice * kmMultiplier
-        );
-      }
+      adjustedMarketPrice = Math.round(
+        baseMarketPrice * kmMultiplier
+      );
     }
 
     // =====================
@@ -140,7 +140,8 @@ app.post("/api/analyze", (req, res) => {
     );
 
     // =====================
-    // 🔥 TAHMİNİ KÂR (SADECE ALTINDA İSE)
+    // TAHMİNİ KÂR
+    // (SADECE PİYASANIN ALTINDA)
     // =====================
     let estimatedProfit = null;
 
@@ -158,7 +159,7 @@ app.post("/api/analyze", (req, res) => {
       rawMarketPrice: baseMarketPrice,
       bargainPrice,
       diffPercent,
-      estimatedProfit, // 👈 sadece uygunsa dolu
+      estimatedProfit,
       count: pool.length,
       method: "hibrit (medyan + ortalama + km)"
     });
